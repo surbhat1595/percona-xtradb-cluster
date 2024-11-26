@@ -196,7 +196,7 @@ get_sources(){
     echo "DEST=${DEST}" >> ${WORKDIR}/pxc-80.properties
     if [ -f /etc/redhat-release ]; then
       export OS_RELEASE="centos$(lsb_release -sr | awk -F'.' '{print $1}')"
-      RHEL=$(rpm --eval %rhel)
+      RHEL=$(rpm --eval "%{?rhel}%{?amzn}")
     if [ "x${RHEL}" = "x6" ]; then
         source /opt/rh/devtoolset-8/enable
     fi
@@ -274,11 +274,15 @@ switch_to_vault_repo() {
 }
 
 get_system(){
-    if [ -f /etc/redhat-release ]; then
+    if [ -f /etc/redhat-release ] || [ -f /etc/amazon-linux-release ]; then
         GLIBC_VER_TMP="$(rpm glibc -qa --qf %{VERSION})"
-        RHEL=$(rpm --eval %rhel)
+        RHEL=$(rpm --eval "%{?rhel}%{?amzn}")
         ARCH=$(echo $(uname -m) | sed -e 's:i686:i386:g')
-        OS_NAME="el$RHEL"
+        if [ -f /etc/amazon-linux-release ]; then
+            export OS_NAME="amzn$RHEL"
+        else
+            export OS_NAME="el$RHEL"
+        fi
         OS="rpm"
     else
         GLIBC_VER_TMP="$(dpkg-query -W -f='${Version}' libc6 | awk -F'-' '{print $1}')"
@@ -307,16 +311,19 @@ install_deps() {
         if [ "x${RHEL}" = "x7" -o x"$RHEL" = x8 ]; then
             switch_to_vault_repo
         fi
-        RHEL=$(rpm --eval %rhel)
+        RHEL=$(rpm --eval "%{?rhel}%{?amzn}")
         ARCH=$(echo $(uname -m) | sed -e 's:i686:i386:g')
         yum update -y
         yum install -y perl
         yum install -y https://repo.percona.com/yum/percona-release-latest.noarch.rpm
         percona-release enable tools testing
-        percona-release enable pxb-24 testing
+        percona-release enable pxb-24 experimental
+        percona-release enable pxb-80 experimental
         if [ "x$RHEL" = "x8" -o "x$RHEL" = "x9" ]; then
             yum -y install dnf-plugins-core epel-release
             yum config-manager --set-enabled powertools
+        fi
+	if [ "x$RHEL" = "x8" -o "x$RHEL" = "x9" -o "x$RHEL" = "x2023" ]; then
 	    yum -y install git
             yum -y install python2-pip python36-devel
             yum -y install autoconf automake binutils bison boost-static cmake gcc gcc-c++ make
@@ -328,9 +335,13 @@ install_deps() {
             yum -y install bison boost-devel check-devel cmake libaio-devel libcurl-devel libudev-devel
             yum -y install redhat-rpm-config
 	    if [ x"$ARCH" = "xx86_64" ]; then
-                wget https://downloads.percona.com/downloads/packaging/rpcgen-1.4-2.fc30.x86_64.rpm
-                wget https://downloads.percona.com/downloads/packaging/gperf-3.1-6.fc29.x86_64.rpm
-                yum -y install rpcgen-1.4-2.fc30.x86_64.rpm gperf-3.1-6.fc29.x86_64.rpm
+                if [ "x${RHEL}" != "x2023" ]; then
+                    wget https://downloads.percona.com/downloads/packaging/rpcgen-1.4-2.fc30.x86_64.rpm
+                    wget https://downloads.percona.com/downloads/packaging/gperf-3.1-6.fc29.x86_64.rpm
+                    yum -y install rpcgen-1.4-2.fc30.x86_64.rpm gperf-3.1-6.fc29.x86_64.rpm
+                else
+                    yum -y install gperf rpcgen annobin-plugin-gcc annobin-annocheck chkconfig nmap
+                fi
 	    else
 		yum -y install yum-utils
 		dnf config-manager --enable ol${RHEL}_codeready_builder
@@ -340,11 +351,19 @@ install_deps() {
                 yum install -y https://yum.oracle.com/repo/OracleLinux/OL9/distro/builder/${ARCH}/getPackage/procps-ng-devel-3.3.17-8.el9.${ARCH}.rpm
                 yum -y install dnf-utils
                 dnf config-manager --enable ol9_codeready_builder
+            fi
+            if [ "x${RHEL}" = "x9" -o "x${RHEL}" = "x2023" ]; then
                 yum -y install libedit-devel
                 yum -y install libtirpc-devel
                 yum -y install gcc
-                yum -y install scons pip python3-devel
-                pip install --user typing pyyaml regex Cheetah3
+                yum -y install pip python3-devel
+		if [ "x${RHEL}" != "x2023" ]; then
+                    yum -y install scons
+                    pip install --user typing pyyaml regex Cheetah3
+                else
+                    yum -y install procps-ng-devel python3-setuptools
+                    pip install --user typing scons pyyaml regex Cheetah3
+                fi
             else
             #    wget https://jenkins.percona.com/yum-repo/percona-dev.repo
             #    mv -vf percona-dev.repo /etc/yum.repos.d
@@ -421,11 +440,14 @@ install_deps() {
             yum -y install gcc-toolset-11-libasan-devel gcc-toolset-11-libubsan-devel
             yum -y remove centos-release-stream
         fi
-        if [ "x$RHEL" = "x9" ]; then
+        if [ "x$RHEL" = "x9" -o "x$RHEL" = "x2023" ]; then
             yum -y install libatomic
         fi
         yum -y install yum-utils patchelf
         yum -y install cyrus-sasl-devel cyrus-sasl-scram krb5-devel
+        if [ "x$RHEL" = "x2023" ]; then
+            export LD_LIBRARY_PATH=/usr/lib64:$LD_LIBRARY_PATH
+        fi
     else
         apt-get -y update
         DEBIAN_FRONTEND=noninteractive apt-get -y install curl lsb-release wget apt-transport-https software-properties-common
@@ -579,7 +601,7 @@ build_srpm(){
     #
 
     SRCRPM=$(find . -name *.src.rpm)
-    RHEL=$(rpm --eval %rhel)
+    RHEL=$(rpm --eval "%{?rhel}%{?amzn}")
     #
     ARCH=$(uname -m)
     if [ ${ARCH} = i686 ]; then
@@ -707,7 +729,7 @@ build_rpm(){
     mkdir -vp rpmbuild/{SOURCES,SPECS,BUILD,SRPMS,RPMS}
     cp $SRC_RPM rpmbuild/SRPMS/
 
-    RHEL=$(rpm --eval %rhel)
+    RHEL=$(rpm --eval "%{?rhel}%{?amzn}")
     ARCH=$(echo $(uname -m) | sed -e 's:i686:i386:g')
     #
     echo "RHEL=${RHEL}" >> pxc-80.properties
@@ -745,9 +767,9 @@ build_rpm(){
     source ${CURDIR}/srpm/pxc-80.properties
     #
     if [ ${ARCH} = x86_64 ]; then
-        rpmbuild --define "_topdir ${WORKDIR}/rpmbuild" --define "dist el${RHEL}" --define "rpm_version $MYSQL_RELEASE.$RPM_RELEASE" --define "rel $RPM_RELEASE" --define "galera_revision ${GALERA_REVNO}" --define "with_mecab ${MECAB_INSTALL_DIR}/usr" --rebuild rpmbuild/SRPMS/${SRCRPM}
+        rpmbuild --define "_topdir ${WORKDIR}/rpmbuild" --define "dist ${OS_NAME}" --define "rpm_version $MYSQL_RELEASE.$RPM_RELEASE" --define "rel $RPM_RELEASE" --define "galera_revision ${GALERA_REVNO}" --define "with_mecab ${MECAB_INSTALL_DIR}/usr" --rebuild rpmbuild/SRPMS/${SRCRPM}
     else
-        rpmbuild --define "_topdir ${WORKDIR}/rpmbuild" --define "dist el${RHEL}" --define "rpm_version $MYSQL_RELEASE.$RPM_RELEASE" --define "rel $RPM_RELEASE" --define "galera_revision ${GALERA_REVNO}" --define "with_tokudb 0" --define "with_rocksdb 0" --define "with_mecab ${MECAB_INSTALL_DIR}/usr" --rebuild rpmbuild/SRPMS/${SRCRPM}
+        rpmbuild --define "_topdir ${WORKDIR}/rpmbuild" --define "dist ${OS_NAME}" --define "rpm_version $MYSQL_RELEASE.$RPM_RELEASE" --define "rel $RPM_RELEASE" --define "galera_revision ${GALERA_REVNO}" --define "with_tokudb 0" --define "with_rocksdb 0" --define "with_mecab ${MECAB_INSTALL_DIR}/usr" --rebuild rpmbuild/SRPMS/${SRCRPM}
     fi
     return_code=$?
     if [ $return_code != 0 ]; then
@@ -959,9 +981,9 @@ build_tarball(){
         export OS_RELEASE="$(lsb_release -sc)"
     fi
     #
-    if [ -f /etc/redhat-release ]; then
+    if [ -f /etc/redhat-release ] || [ -f /etc/amazon-linux-release ]; then
         export OS_RELEASE="centos$(lsb_release -sr | awk -F'.' '{print $1}')"
-        RHEL=$(rpm --eval %rhel)
+        RHEL=$(rpm --eval "%{?rhel}%{?amzn}")
     if [ "x${RHEL}" = "x6" ]; then
         source /opt/rh/devtoolset-8/enable
     fi
@@ -999,10 +1021,11 @@ build_tarball(){
     mkdir -p ${BUILD_ROOT}
     CURDIR=$(pwd)
     cd ${BUILD_ROOT} || exit
-    if [ -f /etc/redhat-release ]; then
+    if [ -f /etc/redhat-release ] || [ -f /etc/amazon-linux-release ]; then
         mkdir pxb-2.4
         pushd pxb-2.4
-        yumdownloader percona-xtrabackup-24-2.4.29
+        #yumdownloader percona-xtrabackup-24-2.4.29
+	wget https://repo.percona.com/pxb-24/yum/experimental/2023/RPMS/x86_64/percona-xtrabackup-24-2.4.29-1.el2023.x86_64.rpm
         rpm2cpio *.rpm | cpio --extract --make-directories --verbose
         mv usr/bin ./
         mv usr/lib* ./
@@ -1015,7 +1038,8 @@ build_tarball(){
 
         mkdir pxb-8.0
         pushd pxb-8.0
-        yumdownloader percona-xtrabackup-80-8.0.35
+	wget https://repo.percona.com/pxb-80/yum/experimental/2023/RPMS/x86_64/percona-xtrabackup-80-8.0.35-31.1.el2023.x86_64.rpm
+       # yumdownloader percona-xtrabackup-80-8.0.35
         rpm2cpio *.rpm | cpio --extract --make-directories --verbose
         mv usr/bin ./
         mv usr/lib64 ./
@@ -1056,7 +1080,7 @@ build_tarball(){
     mv jemalloc-$JVERSION jemalloc
 
     export SCONS_ARGS=" strict_build_flags=0"
-    if [ -f /etc/redhat-release ]; then
+    if [ -f /etc/redhat-release ] || [ -f /etc/amazon-linux-release ]; then
         sed -i 's:cmake ../../:/usr/bin/cmake3 ../../:g' ./build-ps/build-binary.sh
     fi
     if [ -n "${GALERA_REVNO}" ]; then
